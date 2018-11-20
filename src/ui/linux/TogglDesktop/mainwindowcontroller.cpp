@@ -48,13 +48,12 @@ MainWindowController::MainWindowController(
   preferencesDialog(new PreferencesDialog(this)),
   aboutDialog(new AboutDialog(this)),
   feedbackDialog(new FeedbackDialog(this)),
-  idleNotificationDialog(new IdleNotificationDialog(this)),
+  icon(":/icons/1024x1024/toggldesktop.png"),
+  iconDisabled(":/icons/1024x1024/toggldesktop_gray.png"),
   trayIcon(0),
-  reminder(false),
   pomodoro(false),
   script(scriptPath),
-  ui_started(false),
-  reminderPopup(0) {
+  ui_started(false) {
     TogglApi::instance->setEnvironment(APP_ENVIRONMENT);
 
     ui->setupUi(this);
@@ -85,8 +84,6 @@ MainWindowController::MainWindowController(
     connect(TogglApi::instance, SIGNAL(displayLogin(bool,uint64_t)),  // NOLINT
             this, SLOT(displayLogin(bool,uint64_t)));  // NOLINT
 
-    connect(TogglApi::instance, SIGNAL(displayReminder(QString,QString)),  // NOLINT
-            this, SLOT(displayReminder(QString,QString)));  // NOLINT
     connect(TogglApi::instance, SIGNAL(displayPomodoro(QString,QString)),  // NOLINT
             this, SLOT(displayPomodoro(QString,QString)));  // NOLINT
 
@@ -105,26 +102,13 @@ MainWindowController::MainWindowController(
     connect(TogglApi::instance, SIGNAL(updateContinueStopShortcut()),  // NOLINT
             this, SLOT(updateContinueStopShortcut()));  // NOLINT
 
-    hasTrayIconCached = hasTrayIcon();
-    if (hasTrayIconCached) {
-        icon.addFile(QString::fromUtf8(":/icons/1024x1024/toggldesktop.png"));
 
-        iconDisabled.addFile(QString::fromUtf8(
-            ":/icons/1024x1024/toggldesktop_gray.png"));
-
-        trayIcon = new QSystemTrayIcon(this);
-    }
+    setWindowIcon(icon);
+    trayIcon = new SystemTray(icon, this);
 
     setShortcuts();
     connectMenuActions();
     enableMenuActions();
-
-    if (hasTrayIconCached) {
-        // icon is set in enableMenuActions based on if tracking is in progress
-        trayIcon->show();
-    } else {
-        setWindowIcon(icon);
-    }
 
     connect(trayIcon, SIGNAL(activated(QSystemTrayIcon::ActivationReason)),
             this, SLOT(toggleWindow(QSystemTrayIcon::ActivationReason)));
@@ -224,25 +208,6 @@ void MainWindowController::displayPomodoroBreak(
     pomodoro = false;
 }
 
-void MainWindowController::displayReminder(
-    const QString title,
-    const QString informative_text) {
-
-    if (reminder) {
-        return;
-    }
-    reminder = true;
-
-    reminderPopup = new QMessageBox(this);
-    reminderPopup->setIcon(QMessageBox::Information);
-    reminderPopup->setWindowTitle("Tracking Reminder");
-    reminderPopup->setText(title);
-    reminderPopup->setInformativeText(informative_text);
-    reminderPopup->exec();
-
-    reminder = false;
-}
-
 void MainWindowController::displayLogin(
     const bool open,
     const uint64_t user_id) {
@@ -255,9 +220,6 @@ void MainWindowController::displayRunningTimerState(
     TimeEntryView *te) {
     tracking = true;
     enableMenuActions();
-    if (reminder) {
-        reminderPopup->close();
-    }
 }
 
 void MainWindowController::displayStoppedTimerState() {
@@ -275,14 +237,12 @@ void MainWindowController::enableMenuActions() {
     actionSend_Feedback->setEnabled(loggedIn);
     actionReports->setEnabled(loggedIn);
     actionEmail->setText(TogglApi::instance->userEmail());
-    if (hasTrayIconCached) {
-        if (tracking) {
-            trayIcon->setIcon(icon);
-            setWindowIcon(icon);
-        } else {
-            trayIcon->setIcon(iconDisabled);
-            setWindowIcon(iconDisabled);
-        }
+    if (tracking) {
+        setWindowIcon(icon);
+        trayIcon->setIcon(icon);
+    } else {
+        setWindowIcon(iconDisabled);
+        trayIcon->setIcon(iconDisabled);
     }
 }
 
@@ -467,7 +427,7 @@ void MainWindowController::writeSettings() {
 }
 
 void MainWindowController::closeEvent(QCloseEvent *event) {
-    if (hasTrayIcon()) {
+    if (trayIcon->isVisible()) {
         event->ignore();
         hide();
         return;
@@ -487,15 +447,6 @@ void MainWindowController::closeEvent(QCloseEvent *event) {
     }
 
     QMainWindow::closeEvent(event);
-}
-
-bool MainWindowController::hasTrayIcon() const {
-#if (QT_VERSION >= QT_VERSION_CHECK(5, 5, 0))
-    return true;
-#endif
-    QString currentDesktop = QProcessEnvironment::systemEnvironment().value(
-        "XDG_CURRENT_DESKTOP", "");
-    return "Unity" != currentDesktop;
 }
 
 void MainWindowController::showEvent(QShowEvent *event) {

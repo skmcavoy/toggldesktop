@@ -12,7 +12,7 @@ ENVIRONMENT = "development"
 
 DEFINES += APP_ENVIRONMENT=\\\"$$ENVIRONMENT\\\"
 
-QT       += core gui network webengine webenginewidgets widgets
+QT       += core gui network webengine webenginewidgets widgets dbus
 
 TARGET = TogglDesktop
 TEMPLATE = app
@@ -42,11 +42,11 @@ SOURCES += main.cpp\
     preferencesdialog.cpp \
     aboutdialog.cpp \
     feedbackdialog.cpp \
-    idlenotificationdialog.cpp \
     clickablelabel.cpp \
     colorpicker.cpp \
     countryview.cpp \
-    overlaywidget.cpp
+    overlaywidget.cpp \
+    systemtray.cpp
 
 HEADERS  += \
     timeentryview.h \
@@ -67,11 +67,11 @@ HEADERS  += \
     preferencesdialog.h \
     aboutdialog.h \
     feedbackdialog.h \
-    idlenotificationdialog.h \
     clickablelabel.h \
     colorpicker.h \
     countryview.h \
-    overlaywidget.h
+    overlaywidget.h \
+    systemtray.h
 
 FORMS    += \
     mainwindowcontroller.ui \
@@ -85,7 +85,6 @@ FORMS    += \
     preferencesdialog.ui \
     aboutdialog.ui \
     feedbackdialog.ui \
-    idlenotificationdialog.ui \
     colorpicker.ui \
     overlaywidget.ui
 
