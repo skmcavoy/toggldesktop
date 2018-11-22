@@ -2,8 +2,9 @@
 #include <QTimer>
 
 #include "./toggl.h"
+#include "./mainwindowcontroller.h"
 
-SystemTray::SystemTray(const QIcon &icon, QObject *parent) :
+SystemTray::SystemTray(const QIcon &icon, MainWindowController *parent) :
     QSystemTrayIcon(parent),
     idleHintTimer(new QTimer(this))
 {
@@ -21,41 +22,26 @@ SystemTray::SystemTray(const QIcon &icon, QObject *parent) :
     screensaver = new QDBusInterface("org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver", "org.freedesktop.ScreenSaver", QDBusConnection::sessionBus(), this);
     notifications = new QDBusInterface("org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.freedesktop.Notifications", QDBusConnection::sessionBus(), this);
 
+    connect(notifications, SIGNAL(NotificationClosed(uint,uint)), this, SLOT(notificationClosed(uint,uint)));
+    connect(notifications, SIGNAL(ActionInvoked(uint,QString)), this, SLOT(notificationActionInvoked(uint,QString)));
+
     auto pendingCall = notifications->asyncCall("GetCapabilities");
     auto watcher = new QDBusPendingCallWatcher(pendingCall, this);
     connect(watcher, &QDBusPendingCallWatcher::finished, this, &SystemTray::notificationCapabilitiesReceived);
 
-    // ask every 5 seconds
-    idleHintTimer->setInterval(5000);
     connect(idleHintTimer, &QTimer::timeout, this, &SystemTray::requestIdleHint);
-    idleHintTimer->start();
+}
 
-    QImage im = icon.pixmap(128, 128).toImage();
+MainWindowController *SystemTray::mainWindow() {
+    return qobject_cast<MainWindowController*>(parent());
+}
 
-    QByteArray data((char*)im.bits(), im.width() * im.height() * 4);
-
-    qCritical() << "Image size:" << data.count() << "vs" << im.size();
-
-    QDBusArgument imArg;
-    imArg.beginStructure();
-    imArg << im.width() << im.height() << im.width() << 1 << 8 << 4 << data;
-    imArg.endStructure();
-
-    QDBusMessage r = notifications->call("Notify", "TogglDesktop",
-                                0U,
-                                "",
-                                "TITLE",
-                                "DESCRIPTION",
-                                QStringList {"action1", "ACTION 1 LABEL", "action2", "ACTION 2 LABEL"},
-                                QVariantMap {
-                                    {
-                                        "icon_data",
-                                        QVariant::fromValue(imArg)
-                                    }
-                                },
-                                0
-                      );
-    qCritical() << r.errorMessage();
+void SystemTray::displaySettings(const bool open, SettingsView *settings) {
+    if (settings->UseIdleDetection && !idleHintTimer->isActive()) {
+        idleHintTimer->start(1000);
+    } else if (!settings->UseIdleDetection && idleHintTimer->isActive()) {
+        idleHintTimer->stop();
+    }
 }
 
 void SystemTray::requestIdleHint() {
@@ -88,18 +74,108 @@ void SystemTray::notificationCapabilitiesReceived(QDBusPendingCallWatcher *watch
     watcher->deleteLater();
 }
 
+uint SystemTray::requestNotification(uint previous, const QString &title, const QString &description, const QString &actionAccept, const QString &actionReject, const QString &actionRejectAndContinue, const QString &actionNew) {
+    QByteArray data;
+    QImage im(":/icons/64x64/toggldesktop.png");
+    im = im.convertToFormat(QImage::Format_RGBA8888);
+
+    for (int i = 0; i < im.height(); i++) {
+        data.append(reinterpret_cast<const char*>(im.scanLine(i)), im.width() * 4);
+    }
+
+    QStringList actions;
+    if (!actionAccept.isEmpty()) {
+        actions << "accept" << actionAccept;
+    }
+    if (!actionReject.isEmpty()) {
+        actions << "reject" << actionReject;
+    }
+    if (!actionRejectAndContinue.isEmpty()) {
+        actions << "rejectAndContinue" << actionRejectAndContinue;
+    }
+    if (!actionNew.isEmpty()) {
+        actions << "newEntry" << actionNew;
+    }
+    // if no actions are specified, open toggl when the notification itself gets clicked
+    if (actions.isEmpty()) {
+        actions << "Default" << "Open Toggl";
+    }
+
+    // prepare the structure with the image beforehand
+    // as far as I know, it cannot be done inline (without defining a custom stream operator)
+    QDBusArgument imArg;
+    imArg.beginStructure();
+    imArg << im.width() // width in pixels
+          << im.height() // height in pixels
+          << im.width() * 4 // line stride (line length in bytes including padding)
+          << 1 // has alpha
+          << 8 // bits per pixel
+          << 4 // samples per pixel (4 - ARGB format)
+          << data; // byte array with pixel data
+    imArg.endStructure();
+
+    auto reply = notifications->call("Notify", // function name
+                                     "TogglDesktop", // application name
+                                     previous, // replaces ID
+                                     "", // application icon - we need none because we pass it with the data
+                                     title,
+                                     description,
+                                     actions, // actions - pairs - first string is identifier, second is display text
+                                     QVariantMap { // hints
+                                         { "icon_data", QVariant::fromValue(imArg) }
+                                     },
+                                     0); // timeout - 0 is never expire, -1 is default, >0 in ms
+    qCritical() << reply.errorMessage();
+    qCritical() << reply.arguments();
+    return reply.arguments()[0].toUInt();
+}
+
+void SystemTray::notificationClosed(uint id, uint reason) {
+    Q_UNUSED(reason);
+    if (id == lastIdleNotification)
+        lastIdleNotification = 0;
+    if (id == lastReminder)
+        lastReminder = 0;
+}
+
+void SystemTray::notificationActionInvoked(uint id, const QString &action) {
+    if (id == lastReminder && action == "default") {
+        mainWindow()->setWindowState(Qt::WindowActive);
+    }
+    else if (id == lastIdleNotification) {
+        if (action == "accept") {
+            // do nothing
+            mainWindow()->setWindowState(Qt::WindowActive);
+        }
+        else if (action == "reject") {
+            TogglApi::instance->discardTimeAt(lastTimeEntryGuid, lastStarted, false);
+            mainWindow()->setWindowState(Qt::WindowActive);
+        }
+        else if (action == "rejectAndContinue") {
+            TogglApi::instance->discardTimeAndContinue(lastTimeEntryGuid, lastStarted);
+            mainWindow()->setWindowState(Qt::WindowActive);
+        }
+        else if (action== "newEntry") {
+            TogglApi::instance->discardTimeAt(lastTimeEntryGuid, lastStarted, true);
+            mainWindow()->setWindowState(Qt::WindowActive);
+        }
+    }
+}
+
 void SystemTray::displayIdleNotification(
         const QString guid,
         const QString since,
         const QString duration,
         const uint64_t started,
         const QString description) {
-    Q_UNUSED(guid); Q_UNUSED(since); Q_UNUSED(duration); Q_UNUSED(started);
-    showMessage("", description, icon());
+    lastTimeEntryGuid = guid;
+    lastStarted = started;
+    QString title = QString("%1 (%2)").arg(since).arg(duration);
+    lastIdleNotification = requestNotification(lastIdleNotification, title, description, "Keep the time", "Discard the time", "Discard time and continue", "Add idle time as a new time entry");
 }
 
 void SystemTray::displayReminder(QString title, QString description) {
-    showMessage(title, description, icon());
+    lastReminder = requestNotification(lastReminder, title, description);
 }
 
 /*
@@ -131,45 +207,12 @@ IdleNotificationDialog::IdleNotificationDialog(QWidget *parent)
     setWindowTitle("Idle Detection");
 }
 
-IdleNotificationDialog::~IdleNotificationDialog() {
-    delete ui;
-}
-
 void IdleNotificationDialog::displayLogin(const bool open,
         const uint64_t user_id) {
     if (open || !user_id) {
         hide();
     }
 }
-
-void IdleNotificationDialog::displayStoppedTimerState() {
-    hide();
-}
-
-void IdleNotificationDialog::on_keepTimeButton_clicked() {
-    hide();
-}
-
-void IdleNotificationDialog::on_discardTimeButton_clicked() {
-    TogglApi::instance->discardTimeAt(timeEntryGUID, idleStarted, false);
-    hide();
-}
-
-void IdleNotificationDialog::on_discardTimeAndContinueButton_clicked() {
-    TogglApi::instance->discardTimeAndContinue(timeEntryGUID, idleStarted);
-    hide();
-}
-
-void IdleNotificationDialog::displaySettings(
-    const bool open,
-    SettingsView *settings) {
-    if (settings->UseIdleDetection && !timer->isActive()) {
-        timer->start(1000);
-    } else if (!settings->UseIdleDetection && timer->isActive()) {
-        timer->stop();
-    }
-}
-
 void IdleNotificationDialog::displayIdleNotification(
     const QString guid,
     const QString since,
